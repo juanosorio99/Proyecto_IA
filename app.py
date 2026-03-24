@@ -677,7 +677,7 @@ if uploaded_file is not None:
     chart_left, chart_right = st.columns(2, gap="small")
 
     with chart_left:
-        st.markdown("## 🧮 Distribución del impor")
+        st.markdown("## 🧮 Distribución del importes")
         if "IMPORTE_REAL" in analysis_df.columns:
             st.pyplot(make_histogram(analysis_df["IMPORTE_REAL"], "Histograma de IMPORTE_REAL", "IMPORTE_REAL"))
 
