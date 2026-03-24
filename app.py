@@ -7,7 +7,7 @@ import streamlit as st
 
 
 st.set_page_config(
-    page_title="Property Analyzer 2077",
+    page_title="Property Analyzer",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -272,7 +272,7 @@ inject_css()
 st.markdown(
     """
     <div class="hero-box">
-        <h1 style="margin-bottom: 8px; font-size: 3rem;">🚀 Property Analyzer 2077</h1>
+        <h1 style="margin-bottom: 8px; font-size: 3rem;">🚀 Property Analyzer</h1>
         <p style="font-size: 1.08rem; color: #dbe7ff; max-width: 1000px;">
             Analizador especializado para el archivo CSV de Property con alquiler variable. Esta vista está diseñada
             para revisar clientes, ciclos de facturación, importes, estados, períodos y fechas clave del proceso.
@@ -337,6 +337,22 @@ if uploaded_file is not None:
 
     filtered_df = df.copy()
 
+    st.markdown("## 🎛️ Selector de importe por TIPO_2")
+    tipo2_options_for_metric = ["TODOS"]
+    if "TIPO_2" in filtered_df.columns:
+        tipo2_options_for_metric += sorted(filtered_df["TIPO_2"].dropna().unique().tolist())
+
+    selected_tipo2_metric = st.selectbox(
+        "Calcular el importe total para este TIPO_2",
+        tipo2_options_for_metric,
+        index=0,
+    )
+
+    if selected_tipo2_metric == "TODOS":
+        importe_metric_df = filtered_df.copy()
+    else:
+        importe_metric_df = filtered_df[filtered_df["TIPO_2"] == selected_tipo2_metric].copy()
+
     st.markdown("###")
     c1, c2, c3, c4, c5 = st.columns(5, gap="small")
 
@@ -374,13 +390,16 @@ if uploaded_file is not None:
         )
 
     with c4:
-        importe_total = filtered_df['IMPORTE_REAL'].sum() if 'IMPORTE_REAL' in filtered_df.columns else 0
+        importe_total = importe_metric_df['IMPORTE_REAL'].sum() if 'IMPORTE_REAL' in importe_metric_df.columns else 0
+        subtitulo_importe = "suma del período"
+        if selected_tipo2_metric != "TODOS":
+            subtitulo_importe = f"suma para {selected_tipo2_metric}"
         st.markdown(
             f'''
             <div class="metric-card">
                 <div class="metric-title">Importe total</div>
                 <div class="metric-value">{importe_total:,.0f}</div>
-                <div class="metric-sub">suma del período</div>
+                <div class="metric-sub">{subtitulo_importe}</div>
             </div>
             ''', unsafe_allow_html=True
         )
