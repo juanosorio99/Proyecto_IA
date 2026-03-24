@@ -711,9 +711,6 @@ if uploaded_file is not None:
 
             st.dataframe(summary_client_display.head(top_n_clients), use_container_width=True, hide_index=True)
 
-    if show_null_table:
-        st.markdown("## 🧩 Resumen de nulos y tipos")
-        st.dataframe(null_summary(filtered_df), use_container_width=True, hide_index=True)
 
     if show_duplicates and duplicates_count > 0:
         st.markdown("## ♻️ Filas duplicadas")
