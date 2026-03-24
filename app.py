@@ -1,5 +1,6 @@
 from io import StringIO
 from typing import List, Tuple
+import re
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -29,6 +30,21 @@ EXPECTED_COLUMNS = [
 ]
 
 DATE_COLUMNS = ["FECHA_INICIAL", "FECHA_FINAL", "FECHA_GRUPO", "FECHA_VENCIMIENTO"]
+
+SPANISH_MONTHS = {
+    "ENE": "01",
+    "FEB": "02",
+    "MAR": "03",
+    "ABR": "04",
+    "MAY": "05",
+    "JUN": "06",
+    "JUL": "07",
+    "AGO": "08",
+    "SEP": "09",
+    "OCT": "10",
+    "NOV": "11",
+    "DIC": "12",
+}
 
 
 def inject_css() -> None:
@@ -84,6 +100,8 @@ def inject_css() -> None:
             font-size: 2rem;
             font-weight: 800;
             color: #ffffff;
+            line-height: 1.2;
+            word-break: break-word;
         }
 
         .metric-sub {
@@ -195,13 +213,42 @@ def validate_expected_structure(df: pd.DataFrame) -> Tuple[List[str], List[str]]
     return missing, extra
 
 
+def parse_property_date(value):
+    if pd.isna(value):
+        return pd.NaT
+
+    text = str(value).strip().upper()
+
+    if not text or text in {"NONE", "NULL", "NAN"}:
+        return pd.NaT
+
+    match = re.match(r"^(\d{1,2})-([A-ZÁÉÍÓÚ]{3})-(\d{2,4})$", text)
+    if match:
+        day, month_txt, year = match.groups()
+        month_txt = (
+            month_txt.replace("Á", "A")
+            .replace("É", "E")
+            .replace("Í", "I")
+            .replace("Ó", "O")
+            .replace("Ú", "U")
+        )
+        month_num = SPANISH_MONTHS.get(month_txt)
+
+        if month_num:
+            if len(year) == 2:
+                year = f"20{year}"
+            return pd.to_datetime(f"{year}-{month_num}-{int(day):02d}", errors="coerce")
+
+    return pd.to_datetime(text, errors="coerce", dayfirst=True)
+
+
 def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     data = df.copy()
     data.columns = [str(c).strip().upper() for c in data.columns]
 
     for col in DATE_COLUMNS:
         if col in data.columns:
-            data[col] = pd.to_datetime(data[col], errors="coerce", dayfirst=True)
+            data[col] = data[col].apply(parse_property_date)
 
     if "IMPORTE_REAL" in data.columns:
         data["IMPORTE_REAL"] = pd.to_numeric(data["IMPORTE_REAL"], errors="coerce")
@@ -234,6 +281,24 @@ def null_summary(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
     return summary.sort_values(["porcentaje_nulos", "nulos"], ascending=False)
+
+
+def format_cop(value) -> str:
+    if pd.isna(value):
+        return ""
+    return f"$ {value:,.0f}".replace(",", ".")
+
+
+def format_number(value, decimals: int = 2) -> str:
+    if pd.isna(value):
+        return ""
+    return f"{value:,.{decimals}f}"
+
+
+def format_metric_number(value) -> str:
+    if pd.isna(value):
+        return ""
+    return f"{value:,.0f}"
 
 
 def make_bar_chart(series: pd.Series, title: str, xlabel: str, ylabel: str = ""):
@@ -337,13 +402,13 @@ if uploaded_file is not None:
 
     filtered_df = df.copy()
 
-    st.markdown("## 🎛️ Selector de importe por TIPO_2")
+    st.markdown("## 🎛️ Selector de importe por tipo de facturación")
     tipo2_options_for_metric = ["TODOS"]
     if "TIPO_2" in filtered_df.columns:
         tipo2_options_for_metric += sorted(filtered_df["TIPO_2"].dropna().unique().tolist())
 
     selected_tipo2_metric = st.selectbox(
-        "Calcular el importe total para este TIPO_2",
+        "Calcular el importe total para este tipo de facturación",
         tipo2_options_for_metric,
         index=0,
     )
@@ -358,76 +423,97 @@ if uploaded_file is not None:
 
     with c1:
         st.markdown(
-            f'''
+            f"""
             <div class="metric-card">
                 <div class="metric-title">Calidad</div>
                 <div class="metric-value {score_label(quality)}">{quality}%</div>
                 <div class="metric-sub">estructura y consistencia</div>
             </div>
-            ''', unsafe_allow_html=True
+            """,
+            unsafe_allow_html=True
         )
 
     with c2:
         st.markdown(
-            f'''
+            f"""
             <div class="metric-card">
                 <div class="metric-title">Registros</div>
                 <div class="metric-value">{len(filtered_df)}</div>
                 <div class="metric-sub">filas cargadas</div>
             </div>
-            ''', unsafe_allow_html=True
+            """,
+            unsafe_allow_html=True
         )
 
     with c3:
+        total_clientes = filtered_df["NOMBRE_CLIENTE"].nunique() if "NOMBRE_CLIENTE" in filtered_df.columns else 0
         st.markdown(
-            f'''
+            f"""
             <div class="metric-card">
                 <div class="metric-title">Clientes</div>
-                <div class="metric-value">{filtered_df['NOMBRE_CLIENTE'].nunique() if 'NOMBRE_CLIENTE' in filtered_df.columns else 0}</div>
+                <div class="metric-value">{total_clientes}</div>
                 <div class="metric-sub">clientes únicos</div>
             </div>
-            ''', unsafe_allow_html=True
+            """,
+            unsafe_allow_html=True
         )
 
     with c4:
-        importe_total = importe_metric_df['IMPORTE_REAL'].sum() if 'IMPORTE_REAL' in importe_metric_df.columns else 0
+        importe_total = importe_metric_df["IMPORTE_REAL"].sum() if "IMPORTE_REAL" in importe_metric_df.columns else 0
         subtitulo_importe = "suma del período"
         if selected_tipo2_metric != "TODOS":
             subtitulo_importe = f"suma para {selected_tipo2_metric}"
+
+        if selected_tipo2_metric == "VENTAS":
+            importe_display = format_cop(importe_total)
+        else:
+            importe_display = format_metric_number(importe_total)
+
         st.markdown(
-            f'''
+            f"""
             <div class="metric-card">
                 <div class="metric-title">Importe total</div>
-                <div class="metric-value">{importe_total:,.0f}</div>
+                <div class="metric-value">{importe_display}</div>
                 <div class="metric-sub">{subtitulo_importe}</div>
             </div>
-            ''', unsafe_allow_html=True
+            """,
+            unsafe_allow_html=True
         )
 
     with c5:
         st.markdown(
-            f'''
+            f"""
             <div class="metric-card">
                 <div class="metric-title">Nulos</div>
                 <div class="metric-value">{total_nulls}</div>
                 <div class="metric-sub">celdas vacías</div>
             </div>
-            ''', unsafe_allow_html=True
+            """,
+            unsafe_allow_html=True
         )
 
     st.markdown("## 🎛️ Filtros de análisis")
     f1, f2, f3 = st.columns(3, gap="small")
 
     with f1:
-        clientes = sorted([c for c in filtered_df["NOMBRE_CLIENTE"].dropna().unique().tolist()]) if "NOMBRE_CLIENTE" in filtered_df.columns else []
+        clientes = (
+            sorted(filtered_df["NOMBRE_CLIENTE"].dropna().unique().tolist())
+            if "NOMBRE_CLIENTE" in filtered_df.columns else []
+        )
         selected_clients = st.multiselect("NOMBRE_CLIENTE", clientes)
 
     with f2:
-        ciclos = sorted([c for c in filtered_df["CICLO_FACTURACION"].dropna().unique().tolist()]) if "CICLO_FACTURACION" in filtered_df.columns else []
+        ciclos = (
+            sorted(filtered_df["CICLO_FACTURACION"].dropna().unique().tolist())
+            if "CICLO_FACTURACION" in filtered_df.columns else []
+        )
         selected_cycles = st.multiselect("CICLO_FACTURACION", ciclos)
 
     with f3:
-        estados = sorted([c for c in filtered_df["ESTADO"].dropna().unique().tolist()]) if "ESTADO" in filtered_df.columns else []
+        estados = (
+            sorted(filtered_df["ESTADO"].dropna().unique().tolist())
+            if "ESTADO" in filtered_df.columns else []
+        )
         selected_states = st.multiselect("ESTADO", estados)
 
     if selected_clients:
@@ -436,6 +522,12 @@ if uploaded_file is not None:
         filtered_df = filtered_df[filtered_df["CICLO_FACTURACION"].isin(selected_cycles)]
     if selected_states:
         filtered_df = filtered_df[filtered_df["ESTADO"].isin(selected_states)]
+
+    # sincroniza el selector principal con el resto del análisis monetario
+    if selected_tipo2_metric == "TODOS":
+        analysis_df = filtered_df.copy()
+    else:
+        analysis_df = filtered_df[filtered_df["TIPO_2"] == selected_tipo2_metric].copy()
 
     st.markdown("## 👀 Vista previa del dataframe")
     st.dataframe(filtered_df.head(preview_rows), use_container_width=True)
@@ -469,7 +561,7 @@ if uploaded_file is not None:
             render_tags(sorted(filtered_df["ESTADO"].dropna().unique().tolist()))
 
     with right_panel:
-        st.markdown("## 📊 Estadísticos por TIPO_2 sobre IMPORTE_REAL")
+        st.markdown("## 📊 Estadísticos por tipo de facturación sobre IMPORTE_REAL")
         if {"TIPO_2", "IMPORTE_REAL"}.issubset(filtered_df.columns):
             stats_by_tipo2 = (
                 filtered_df.dropna(subset=["TIPO_2", "IMPORTE_REAL"])
@@ -486,15 +578,27 @@ if uploaded_file is not None:
                 .reset_index()
                 .sort_values("suma", ascending=False)
             )
-            st.dataframe(stats_by_tipo2, use_container_width=True, hide_index=True)
+
+            stats_by_tipo2_display = stats_by_tipo2.copy()
+            money_cols = ["suma", "promedio", "mediana", "minimo", "maximo", "desv_estandar"]
+
+            ventas_mask = stats_by_tipo2_display["TIPO_2"].astype(str).str.upper() == "VENTAS"
+            for col in money_cols:
+                stats_by_tipo2_display.loc[ventas_mask, col] = stats_by_tipo2_display.loc[ventas_mask, col].apply(format_cop)
+                stats_by_tipo2_display.loc[~ventas_mask, col] = stats_by_tipo2_display.loc[~ventas_mask, col].apply(
+                    lambda x: format_number(x, 2)
+                )
+
+            stats_by_tipo2_display = stats_by_tipo2_display.rename(columns={"TIPO_2": "tipo de facturación"})
+            st.dataframe(stats_by_tipo2_display, use_container_width=True, hide_index=True)
 
     g1, g2 = st.columns(2, gap="small")
 
     with g1:
         st.markdown("## 📈 Importe por cliente")
-        if {"NOMBRE_CLIENTE", "IMPORTE_REAL"}.issubset(filtered_df.columns):
+        if {"NOMBRE_CLIENTE", "IMPORTE_REAL"}.issubset(analysis_df.columns):
             client_amount = (
-                filtered_df.groupby("NOMBRE_CLIENTE", dropna=False)["IMPORTE_REAL"]
+                analysis_df.groupby("NOMBRE_CLIENTE", dropna=False)["IMPORTE_REAL"]
                 .sum()
                 .sort_values(ascending=False)
                 .head(top_n_clients)
@@ -511,8 +615,8 @@ if uploaded_file is not None:
 
     with g3:
         st.markdown("## 💰 Importe por ciclo")
-        if {"CICLO_FACTURACION", "IMPORTE_REAL"}.issubset(filtered_df.columns):
-            cycle_amount = filtered_df.groupby("CICLO_FACTURACION")["IMPORTE_REAL"].sum().sort_values(ascending=False)
+        if {"CICLO_FACTURACION", "IMPORTE_REAL"}.issubset(analysis_df.columns):
+            cycle_amount = analysis_df.groupby("CICLO_FACTURACION")["IMPORTE_REAL"].sum().sort_values(ascending=False)
             st.pyplot(make_bar_chart(cycle_amount, "Importe por ciclo de facturación", "Ciclo", "Importe"))
 
     with g4:
@@ -521,13 +625,14 @@ if uploaded_file is not None:
             status_count = filtered_df["ESTADO"].value_counts().sort_values(ascending=False)
             st.pyplot(make_bar_chart(status_count, "Cantidad de registros por estado", "Estado", "Registros"))
 
-    st.markdown("## 🧪 Comparativo estadístico por TIPO_2")
+    st.markdown("## 🧪 Comparativo estadístico por tipo de facturación")
     if {"TIPO_2", "IMPORTE_REAL"}.issubset(filtered_df.columns):
         selected_tipo2_for_stats = st.multiselect(
-            "Selecciona valores de TIPO_2 para comparar estadísticos de IMPORTE_REAL",
+            "Selecciona valores del tipo de facturación para comparar estadísticos de IMPORTE_REAL",
             sorted(filtered_df["TIPO_2"].dropna().unique().tolist()),
             default=sorted(filtered_df["TIPO_2"].dropna().unique().tolist())[:5],
         )
+
         if selected_tipo2_for_stats:
             compare_stats = (
                 filtered_df[filtered_df["TIPO_2"].isin(selected_tipo2_for_stats)]
@@ -544,12 +649,24 @@ if uploaded_file is not None:
                 .reset_index()
                 .sort_values("suma", ascending=False)
             )
-            st.dataframe(compare_stats, use_container_width=True, hide_index=True)
+
+            compare_stats_display = compare_stats.copy()
+            money_cols = ["suma", "promedio", "mediana", "minimo", "maximo", "desv_estandar"]
+
+            ventas_mask = compare_stats_display["TIPO_2"].astype(str).str.upper() == "VENTAS"
+            for col in money_cols:
+                compare_stats_display.loc[ventas_mask, col] = compare_stats_display.loc[ventas_mask, col].apply(format_cop)
+                compare_stats_display.loc[~ventas_mask, col] = compare_stats_display.loc[~ventas_mask, col].apply(
+                    lambda x: format_number(x, 2)
+                )
+
+            compare_stats_display = compare_stats_display.rename(columns={"TIPO_2": "tipo de facturación"})
+            st.dataframe(compare_stats_display, use_container_width=True, hide_index=True)
 
     st.markdown("## 📅 Evolución temporal por FECHA_GRUPO")
-    if {"FECHA_GRUPO", "IMPORTE_REAL"}.issubset(filtered_df.columns):
+    if {"FECHA_GRUPO", "IMPORTE_REAL"}.issubset(analysis_df.columns):
         time_amount = (
-            filtered_df.dropna(subset=["FECHA_GRUPO"])
+            analysis_df.dropna(subset=["FECHA_GRUPO"])
             .groupby("FECHA_GRUPO")["IMPORTE_REAL"]
             .sum()
             .sort_index()
@@ -561,14 +678,14 @@ if uploaded_file is not None:
 
     with chart_left:
         st.markdown("## 🧮 Distribución del importe")
-        if "IMPORTE_REAL" in filtered_df.columns:
-            st.pyplot(make_histogram(filtered_df["IMPORTE_REAL"], "Histograma de IMPORTE_REAL", "IMPORTE_REAL"))
+        if "IMPORTE_REAL" in analysis_df.columns:
+            st.pyplot(make_histogram(analysis_df["IMPORTE_REAL"], "Histograma de IMPORTE_REAL", "IMPORTE_REAL"))
 
     with chart_right:
         st.markdown("## 🧾 Resumen por cliente")
-        if {"NOMBRE_CLIENTE", "IMPORTE_REAL", "ALQUILER_VARIABLE"}.issubset(filtered_df.columns):
+        if {"NOMBRE_CLIENTE", "IMPORTE_REAL", "ALQUILER_VARIABLE"}.issubset(analysis_df.columns):
             summary_client = (
-                filtered_df.groupby("NOMBRE_CLIENTE")
+                analysis_df.groupby("NOMBRE_CLIENTE")
                 .agg(
                     alquileres=("ALQUILER_VARIABLE", "nunique"),
                     registros=("ALQUILER_VARIABLE", "count"),
@@ -578,7 +695,21 @@ if uploaded_file is not None:
                 .sort_values("importe_total", ascending=False)
                 .reset_index()
             )
-            st.dataframe(summary_client.head(top_n_clients), use_container_width=True, hide_index=True)
+
+            summary_client_display = summary_client.copy()
+
+            if selected_tipo2_metric == "VENTAS":
+                summary_client_display["importe_total"] = summary_client_display["importe_total"].apply(format_cop)
+                summary_client_display["importe_promedio"] = summary_client_display["importe_promedio"].apply(format_cop)
+            else:
+                summary_client_display["importe_total"] = summary_client_display["importe_total"].apply(
+                    lambda x: format_number(x, 2)
+                )
+                summary_client_display["importe_promedio"] = summary_client_display["importe_promedio"].apply(
+                    lambda x: format_number(x, 2)
+                )
+
+            st.dataframe(summary_client_display.head(top_n_clients), use_container_width=True, hide_index=True)
 
     if show_null_table:
         st.markdown("## 🧩 Resumen de nulos y tipos")
