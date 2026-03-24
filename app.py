@@ -1,16 +1,34 @@
 from io import StringIO
 from typing import List, Tuple
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
 
 st.set_page_config(
-    page_title="CSV Analyzer 2077",
+    page_title="Property Analyzer 2077",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+EXPECTED_COLUMNS = [
+    "ALQUILER_VARIABLE",
+    "NRO_PERIODO",
+    "FECHA_INICIAL",
+    "FECHA_FINAL",
+    "FECHA_GRUPO",
+    "FECHA_VENCIMIENTO",
+    "IMPORTE_REAL",
+    "ESTADO",
+    "NOMBRE_CLIENTE",
+    "TIPO_1",
+    "TIPO_2",
+    "CICLO_FACTURACION",
+]
+
+DATE_COLUMNS = ["FECHA_INICIAL", "FECHA_FINAL", "FECHA_GRUPO", "FECHA_VENCIMIENTO"]
 
 
 def inject_css() -> None:
@@ -32,7 +50,7 @@ def inject_css() -> None:
         }
 
         .block-container {
-            padding-top: 1.2rem;
+            padding-top: 1.1rem;
             padding-bottom: 1.2rem;
         }
 
@@ -75,9 +93,9 @@ def inject_css() -> None:
         }
 
         .section-title {
-            font-size: 1.2rem;
+            font-size: 1.15rem;
             font-weight: 800;
-            margin-bottom: 0.65rem;
+            margin-bottom: 0.6rem;
             color: #eef4ff;
         }
 
@@ -117,7 +135,8 @@ def inject_css() -> None:
         div[data-testid="stTextArea"] textarea,
         div[data-testid="stTextInput"] input,
         div[data-baseweb="select"] > div,
-        div[data-testid="stNumberInput"] input {
+        div[data-testid="stNumberInput"] input,
+        div[data-baseweb="tag"] {
             background-color: rgba(255,255,255,0.06) !important;
             color: white !important;
             border-radius: 14px !important;
@@ -127,15 +146,6 @@ def inject_css() -> None:
         div[data-testid="stSidebar"] {
             background: linear-gradient(180deg, rgba(7,17,31,0.98), rgba(13,24,47,0.96));
             border-right: 1px solid rgba(255,255,255,0.08);
-        }
-
-        div[data-testid="stHorizontalBlock"] {
-            align-items: flex-start !important;
-        }
-
-        div[data-testid="stHorizontalBlock"] > div {
-            margin-top: 0 !important;
-            padding-top: 0 !important;
         }
         </style>
         """,
@@ -155,10 +165,63 @@ def load_csv(file_bytes: bytes, delimiter: str, encoding: str) -> pd.DataFrame:
     return pd.read_csv(StringIO(content), sep=delimiter)
 
 
-def classify_columns(df: pd.DataFrame) -> Tuple[List[str], List[str]]:
-    numeric_cols = df.select_dtypes(include="number").columns.tolist()
-    categorical_cols = [col for col in df.columns if col not in numeric_cols]
-    return numeric_cols, categorical_cols
+def score_label(score: int) -> str:
+    if score >= 80:
+        return "score-good"
+    if score >= 55:
+        return "score-mid"
+    return "score-low"
+
+
+def score_quality(df: pd.DataFrame) -> int:
+    rows, cols = df.shape
+    if rows == 0 or cols == 0:
+        return 0
+
+    null_pct = df.isnull().mean().mean() * 100
+    duplicated_pct = df.duplicated().mean() * 100 if len(df) > 0 else 0
+    missing_expected = sum(1 for c in EXPECTED_COLUMNS if c not in df.columns)
+
+    score = 100
+    score -= min(int(null_pct * 1.1), 35)
+    score -= min(int(duplicated_pct * 1.5), 25)
+    score -= missing_expected * 6
+    return max(0, min(100, score))
+
+
+def validate_expected_structure(df: pd.DataFrame) -> Tuple[List[str], List[str]]:
+    missing = [col for col in EXPECTED_COLUMNS if col not in df.columns]
+    extra = [col for col in df.columns if col not in EXPECTED_COLUMNS]
+    return missing, extra
+
+
+def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    data = df.copy()
+    data.columns = [str(c).strip().upper() for c in data.columns]
+
+    for col in DATE_COLUMNS:
+        if col in data.columns:
+            data[col] = pd.to_datetime(data[col], errors="coerce", dayfirst=True)
+
+    if "IMPORTE_REAL" in data.columns:
+        data["IMPORTE_REAL"] = pd.to_numeric(data["IMPORTE_REAL"], errors="coerce")
+
+    if "NRO_PERIODO" in data.columns:
+        data["NRO_PERIODO"] = pd.to_numeric(data["NRO_PERIODO"], errors="coerce")
+
+    for col in ["ESTADO", "NOMBRE_CLIENTE", "TIPO_1", "TIPO_2", "CICLO_FACTURACION"]:
+        if col in data.columns:
+            data[col] = data[col].astype(str).str.strip()
+
+    return data
+
+
+def render_tags(values: List[str]) -> None:
+    if not values:
+        st.caption("No hay elementos para mostrar.")
+        return
+    html = "".join([f'<span class="tag">{v}</span>' for v in values])
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def null_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -173,41 +236,35 @@ def null_summary(df: pd.DataFrame) -> pd.DataFrame:
     return summary.sort_values(["porcentaje_nulos", "nulos"], ascending=False)
 
 
-def score_quality(df: pd.DataFrame) -> int:
-    rows, cols = df.shape
-    if rows == 0 or cols == 0:
-        return 0
-
-    null_pct = df.isnull().mean().mean() * 100
-    duplicated_pct = df.duplicated().mean() * 100 if len(df) > 0 else 0
-
-    score = 100
-    score -= min(int(null_pct * 1.2), 45)
-    score -= min(int(duplicated_pct * 1.5), 30)
-
-    if cols < 2:
-        score -= 15
-    if rows < 5:
-        score -= 15
-
-    return max(0, min(100, score))
+def make_bar_chart(series: pd.Series, title: str, xlabel: str, ylabel: str = ""):
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    series.plot(kind="bar", ax=ax)
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.tick_params(axis="x", rotation=30)
+    fig.tight_layout()
+    return fig
 
 
-def score_label(score: int) -> str:
-    if score >= 80:
-        return "score-good"
-    if score >= 55:
-        return "score-mid"
-    return "score-low"
+def make_line_chart(series: pd.Series, title: str, xlabel: str, ylabel: str = ""):
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    series.plot(kind="line", marker="o", ax=ax)
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    fig.tight_layout()
+    return fig
 
 
-def render_tags(values: List[str]) -> None:
-    if not values:
-        st.caption("No hay elementos para mostrar.")
-        return
-
-    tags_html = "".join([f'<span class="tag">{v}</span>' for v in values])
-    st.markdown(tags_html, unsafe_allow_html=True)
+def make_histogram(series: pd.Series, title: str, xlabel: str):
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    ax.hist(series.dropna(), bins=20)
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Frecuencia")
+    fig.tight_layout()
+    return fig
 
 
 inject_css()
@@ -215,10 +272,10 @@ inject_css()
 st.markdown(
     """
     <div class="hero-box">
-        <h1 style="margin-bottom: 8px; font-size: 3rem;">🚀 CSV Analyzer 2077</h1>
-        <p style="font-size: 1.1rem; color: #dbe7ff; max-width: 1000px;">
-            Sube un archivo CSV, conviértelo en dataframe y obtén un análisis visual, futurista y útil:
-            calidad de datos, tipos de columnas, nulos, duplicados, estadísticas y exploración rápida.
+        <h1 style="margin-bottom: 8px; font-size: 3rem;">🚀 Property Analyzer 2077</h1>
+        <p style="font-size: 1.08rem; color: #dbe7ff; max-width: 1000px;">
+            Analizador especializado para el archivo CSV de Property con alquiler variable. Esta vista está diseñada
+            para revisar clientes, ciclos de facturación, importes, estados, períodos y fechas clave del proceso.
         </p>
     </div>
     """,
@@ -227,35 +284,28 @@ st.markdown(
 
 with st.sidebar:
     st.markdown("## ⚙️ Configuración")
-    st.write("Personaliza la carga y el análisis del CSV.")
-
     encoding = st.selectbox("Codificación", ["utf-8", "latin-1", "cp1252"], index=0)
     delimiter_option = st.selectbox("Separador", ["Auto detectar", ",", ";", "Tab", "|"])
-    preview_rows = st.slider("Filas a previsualizar", min_value=5, max_value=100, value=10, step=5)
+    preview_rows = st.slider("Filas a previsualizar", min_value=5, max_value=50, value=10, step=5)
+    top_n_clients = st.slider("Top clientes en gráficos", min_value=5, max_value=20, value=10, step=1)
     show_null_table = st.toggle("Mostrar tabla de nulos", value=True)
-    show_stats_table = st.toggle("Mostrar estadísticas numéricas", value=True)
     show_duplicates = st.toggle("Mostrar duplicados", value=True)
 
     st.markdown("---")
-    st.markdown(
-        """
-        **Formato soportado:** CSV  
-        **Ideal para:** exploración, profiling rápido, calidad de datos y validación inicial.
-        """
-    )
+    st.markdown("**Archivo esperado:** CSV exportado de Property con la consulta estándar de alquiler variable.")
 
 upload_col, info_col = st.columns([1.15, 0.85], gap="small")
 
 with upload_col:
-    st.markdown('<div class="section-title">📁 Cargar CSV</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">📁 Cargar CSV de Property</div>', unsafe_allow_html=True)
     uploaded_file = st.file_uploader("Sube tu archivo CSV", type=["csv"], label_visibility="collapsed")
 
 with info_col:
-    st.markdown('<div class="section-title">🧪 Información de análisis</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🧾 Estructura esperada</div>', unsafe_allow_html=True)
     st.text_area(
-        "Resumen",
-        value="El archivo se leerá como dataframe para analizar estructura, calidad, columnas numéricas, categóricas, nulos y duplicados.",
-        height=180,
+        "Estructura",
+        value="ALQUILER_VARIABLE, NRO_PERIODO, FECHA_INICIAL, FECHA_FINAL, FECHA_GRUPO, FECHA_VENCIMIENTO, IMPORTE_REAL, ESTADO, NOMBRE_CLIENTE, TIPO_1, TIPO_2, CICLO_FACTURACION",
+        height=160,
         label_visibility="collapsed",
         disabled=True,
     )
@@ -266,7 +316,6 @@ if uploaded_file is not None:
     try:
         sample = file_bytes[:5000].decode(encoding, errors="replace")
         detected_delimiter = detect_delimiter(sample)
-
         delimiter_map = {
             "Auto detectar": detected_delimiter,
             ",": ",",
@@ -275,122 +324,252 @@ if uploaded_file is not None:
             "|": "|",
         }
         delimiter = delimiter_map[delimiter_option]
-
-        df = load_csv(file_bytes, delimiter, encoding)
-
+        raw_df = load_csv(file_bytes, delimiter, encoding)
+        df = prepare_dataframe(raw_df)
     except Exception as exc:
         st.error(f"No se pudo procesar el CSV: {exc}")
         st.stop()
 
-    numeric_cols, categorical_cols = classify_columns(df)
+    missing_cols, extra_cols = validate_expected_structure(df)
     quality = score_quality(df)
     duplicates_count = int(df.duplicated().sum())
     total_nulls = int(df.isnull().sum().sum())
 
+    filtered_df = df.copy()
+
     st.markdown("###")
+    c1, c2, c3, c4, c5 = st.columns(5, gap="small")
 
-    m1, m2, m3, m4 = st.columns(4, gap="small")
-
-    with m1:
+    with c1:
         st.markdown(
-            f"""
+            f'''
             <div class="metric-card">
-                <div class="metric-title">Calidad del dataset</div>
+                <div class="metric-title">Calidad</div>
                 <div class="metric-value {score_label(quality)}">{quality}%</div>
-                <div class="metric-sub">estimación general</div>
+                <div class="metric-sub">estructura y consistencia</div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            ''', unsafe_allow_html=True
         )
 
-    with m2:
+    with c2:
         st.markdown(
-            f"""
+            f'''
             <div class="metric-card">
-                <div class="metric-title">Filas / Registros</div>
-                <div class="metric-value">{df.shape[0]}</div>
-                <div class="metric-sub">observaciones cargadas</div>
+                <div class="metric-title">Registros</div>
+                <div class="metric-value">{len(filtered_df)}</div>
+                <div class="metric-sub">filas cargadas</div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            ''', unsafe_allow_html=True
         )
 
-    with m3:
+    with c3:
         st.markdown(
-            f"""
+            f'''
             <div class="metric-card">
-                <div class="metric-title">Columnas</div>
-                <div class="metric-value">{df.shape[1]}</div>
-                <div class="metric-sub">variables detectadas</div>
+                <div class="metric-title">Clientes</div>
+                <div class="metric-value">{filtered_df['NOMBRE_CLIENTE'].nunique() if 'NOMBRE_CLIENTE' in filtered_df.columns else 0}</div>
+                <div class="metric-sub">clientes únicos</div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            ''', unsafe_allow_html=True
         )
 
-    with m4:
+    with c4:
+        importe_total = filtered_df['IMPORTE_REAL'].sum() if 'IMPORTE_REAL' in filtered_df.columns else 0
         st.markdown(
-            f"""
+            f'''
             <div class="metric-card">
-                <div class="metric-title">Nulos totales</div>
+                <div class="metric-title">Importe total</div>
+                <div class="metric-value">{importe_total:,.0f}</div>
+                <div class="metric-sub">suma del período</div>
+            </div>
+            ''', unsafe_allow_html=True
+        )
+
+    with c5:
+        st.markdown(
+            f'''
+            <div class="metric-card">
+                <div class="metric-title">Nulos</div>
                 <div class="metric-value">{total_nulls}</div>
                 <div class="metric-sub">celdas vacías</div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            ''', unsafe_allow_html=True
         )
 
-    st.markdown("###")
+    st.markdown("## 🎛️ Filtros de análisis")
+    f1, f2, f3 = st.columns(3, gap="small")
 
-    left_panel, right_panel = st.columns([1.08, 0.92], gap="small")
+    with f1:
+        clientes = sorted([c for c in filtered_df["NOMBRE_CLIENTE"].dropna().unique().tolist()]) if "NOMBRE_CLIENTE" in filtered_df.columns else []
+        selected_clients = st.multiselect("NOMBRE_CLIENTE", clientes)
+
+    with f2:
+        ciclos = sorted([c for c in filtered_df["CICLO_FACTURACION"].dropna().unique().tolist()]) if "CICLO_FACTURACION" in filtered_df.columns else []
+        selected_cycles = st.multiselect("CICLO_FACTURACION", ciclos)
+
+    with f3:
+        estados = sorted([c for c in filtered_df["ESTADO"].dropna().unique().tolist()]) if "ESTADO" in filtered_df.columns else []
+        selected_states = st.multiselect("ESTADO", estados)
+
+    if selected_clients:
+        filtered_df = filtered_df[filtered_df["NOMBRE_CLIENTE"].isin(selected_clients)]
+    if selected_cycles:
+        filtered_df = filtered_df[filtered_df["CICLO_FACTURACION"].isin(selected_cycles)]
+    if selected_states:
+        filtered_df = filtered_df[filtered_df["ESTADO"].isin(selected_states)]
+
+    st.markdown("## 👀 Vista previa del dataframe")
+    st.dataframe(filtered_df.head(preview_rows), use_container_width=True)
+
+    left_panel, right_panel = st.columns([1.05, 0.95], gap="small")
 
     with left_panel:
-        st.markdown("## 👀 Vista previa del dataframe")
-        st.dataframe(df.head(preview_rows), use_container_width=True)
-
-        st.markdown("## 🧠 Diagnóstico rápido")
+        st.markdown("## 🧠 Diagnóstico de negocio")
         st.write(f"**Separador usado:** `{repr(delimiter)}`")
         st.write(f"**Codificación usada:** `{encoding}`")
         st.write(f"**Duplicados detectados:** {duplicates_count}")
-        st.write(f"**Columnas numéricas:** {len(numeric_cols)}")
-        st.write(f"**Columnas categóricas:** {len(categorical_cols)}")
+        st.write(f"**Columnas faltantes esperadas:** {len(missing_cols)}")
+        st.write(f"**Columnas extra:** {len(extra_cols)}")
 
-        recommendations = []
-        if duplicates_count > 0:
-            recommendations.append("Hay filas duplicadas; conviene revisarlas o depurarlas.")
-        if total_nulls > 0:
-            recommendations.append("El dataset tiene valores nulos; valida si deben imputarse o eliminarse.")
-        if len(numeric_cols) == 0:
-            recommendations.append("No se detectaron columnas numéricas; revisa el separador o el formato del CSV.")
-        if df.shape[0] < 10:
-            recommendations.append("El dataset tiene pocas filas; el análisis estadístico puede ser limitado.")
-        if quality >= 85:
-            recommendations.append("La calidad general del dataset luce buena para un análisis inicial.")
+        if missing_cols:
+            st.warning("Faltan columnas esperadas en el archivo.")
+            render_tags(missing_cols)
+        else:
+            st.success("La estructura del archivo coincide con la consulta esperada.")
 
-        st.write("**Recomendaciones:**")
-        for rec in recommendations:
-            st.info(rec)
+        if extra_cols:
+            st.info("Se detectaron columnas adicionales.")
+            render_tags(extra_cols)
+
+        if "CICLO_FACTURACION" in filtered_df.columns:
+            st.write("**Ciclos presentes:**")
+            render_tags(sorted(filtered_df["CICLO_FACTURACION"].dropna().unique().tolist()))
+
+        if "ESTADO" in filtered_df.columns:
+            st.write("**Estados presentes:**")
+            render_tags(sorted(filtered_df["ESTADO"].dropna().unique().tolist()))
 
     with right_panel:
-        st.markdown("## 🏷️ Tipos de columnas")
-        st.write("**Numéricas**")
-        render_tags(numeric_cols)
+        st.markdown("## 📊 Estadísticos por TIPO_2 sobre IMPORTE_REAL")
+        if {"TIPO_2", "IMPORTE_REAL"}.issubset(filtered_df.columns):
+            stats_by_tipo2 = (
+                filtered_df.dropna(subset=["TIPO_2", "IMPORTE_REAL"])
+                .groupby("TIPO_2")["IMPORTE_REAL"]
+                .agg([
+                    ("registros", "count"),
+                    ("suma", "sum"),
+                    ("promedio", "mean"),
+                    ("mediana", "median"),
+                    ("minimo", "min"),
+                    ("maximo", "max"),
+                    ("desv_estandar", "std"),
+                ])
+                .reset_index()
+                .sort_values("suma", ascending=False)
+            )
+            st.dataframe(stats_by_tipo2, use_container_width=True, hide_index=True)
 
-        st.write("**Categóricas / texto**")
-        render_tags(categorical_cols[:30])
+    g1, g2 = st.columns(2, gap="small")
 
-        if show_stats_table and numeric_cols:
-            st.markdown("## 📊 Estadísticas numéricas")
-            st.dataframe(df[numeric_cols].describe().T, use_container_width=True)
+    with g1:
+        st.markdown("## 📈 Importe por cliente")
+        if {"NOMBRE_CLIENTE", "IMPORTE_REAL"}.issubset(filtered_df.columns):
+            client_amount = (
+                filtered_df.groupby("NOMBRE_CLIENTE", dropna=False)["IMPORTE_REAL"]
+                .sum()
+                .sort_values(ascending=False)
+                .head(top_n_clients)
+            )
+            st.pyplot(make_bar_chart(client_amount, "Top clientes por importe", "Cliente", "Importe"))
+
+    with g2:
+        st.markdown("## 🌀 Registros por ciclo")
+        if "CICLO_FACTURACION" in filtered_df.columns:
+            cycle_count = filtered_df["CICLO_FACTURACION"].value_counts().sort_values(ascending=False)
+            st.pyplot(make_bar_chart(cycle_count, "Cantidad de registros por ciclo", "Ciclo", "Registros"))
+
+    g3, g4 = st.columns(2, gap="small")
+
+    with g3:
+        st.markdown("## 💰 Importe por ciclo")
+        if {"CICLO_FACTURACION", "IMPORTE_REAL"}.issubset(filtered_df.columns):
+            cycle_amount = filtered_df.groupby("CICLO_FACTURACION")["IMPORTE_REAL"].sum().sort_values(ascending=False)
+            st.pyplot(make_bar_chart(cycle_amount, "Importe por ciclo de facturación", "Ciclo", "Importe"))
+
+    with g4:
+        st.markdown("## 📌 Registros por estado")
+        if "ESTADO" in filtered_df.columns:
+            status_count = filtered_df["ESTADO"].value_counts().sort_values(ascending=False)
+            st.pyplot(make_bar_chart(status_count, "Cantidad de registros por estado", "Estado", "Registros"))
+
+    st.markdown("## 🧪 Comparativo estadístico por TIPO_2")
+    if {"TIPO_2", "IMPORTE_REAL"}.issubset(filtered_df.columns):
+        selected_tipo2_for_stats = st.multiselect(
+            "Selecciona valores de TIPO_2 para comparar estadísticos de IMPORTE_REAL",
+            sorted(filtered_df["TIPO_2"].dropna().unique().tolist()),
+            default=sorted(filtered_df["TIPO_2"].dropna().unique().tolist())[:5],
+        )
+        if selected_tipo2_for_stats:
+            compare_stats = (
+                filtered_df[filtered_df["TIPO_2"].isin(selected_tipo2_for_stats)]
+                .groupby("TIPO_2")["IMPORTE_REAL"]
+                .agg([
+                    ("registros", "count"),
+                    ("suma", "sum"),
+                    ("promedio", "mean"),
+                    ("mediana", "median"),
+                    ("minimo", "min"),
+                    ("maximo", "max"),
+                    ("desv_estandar", "std"),
+                ])
+                .reset_index()
+                .sort_values("suma", ascending=False)
+            )
+            st.dataframe(compare_stats, use_container_width=True, hide_index=True)
+
+    st.markdown("## 📅 Evolución temporal por FECHA_GRUPO")
+    if {"FECHA_GRUPO", "IMPORTE_REAL"}.issubset(filtered_df.columns):
+        time_amount = (
+            filtered_df.dropna(subset=["FECHA_GRUPO"])
+            .groupby("FECHA_GRUPO")["IMPORTE_REAL"]
+            .sum()
+            .sort_index()
+        )
+        if len(time_amount) > 0:
+            st.pyplot(make_line_chart(time_amount, "Importe total por fecha de grupo", "Fecha grupo", "Importe"))
+
+    chart_left, chart_right = st.columns(2, gap="small")
+
+    with chart_left:
+        st.markdown("## 🧮 Distribución del importe")
+        if "IMPORTE_REAL" in filtered_df.columns:
+            st.pyplot(make_histogram(filtered_df["IMPORTE_REAL"], "Histograma de IMPORTE_REAL", "IMPORTE_REAL"))
+
+    with chart_right:
+        st.markdown("## 🧾 Resumen por cliente")
+        if {"NOMBRE_CLIENTE", "IMPORTE_REAL", "ALQUILER_VARIABLE"}.issubset(filtered_df.columns):
+            summary_client = (
+                filtered_df.groupby("NOMBRE_CLIENTE")
+                .agg(
+                    alquileres=("ALQUILER_VARIABLE", "nunique"),
+                    registros=("ALQUILER_VARIABLE", "count"),
+                    importe_total=("IMPORTE_REAL", "sum"),
+                    importe_promedio=("IMPORTE_REAL", "mean"),
+                )
+                .sort_values("importe_total", ascending=False)
+                .reset_index()
+            )
+            st.dataframe(summary_client.head(top_n_clients), use_container_width=True, hide_index=True)
 
     if show_null_table:
         st.markdown("## 🧩 Resumen de nulos y tipos")
-        st.dataframe(null_summary(df), use_container_width=True, hide_index=True)
+        st.dataframe(null_summary(filtered_df), use_container_width=True, hide_index=True)
 
     if show_duplicates and duplicates_count > 0:
         st.markdown("## ♻️ Filas duplicadas")
-        st.dataframe(df[df.duplicated()].head(50), use_container_width=True)
+        st.dataframe(filtered_df[filtered_df.duplicated()].head(50), use_container_width=True)
 
 else:
-    st.info("Sube un CSV para iniciar el análisis del dataframe.")
+    st.info("Sube el CSV de Property para iniciar el análisis especializado.")
 
-st.caption("Diseño futurista en Streamlit • análisis de CSV a dataframe • profiling inicial de datos")
+st.caption("Diseño futurista en Streamlit • análisis especializado de Property • clientes, ciclos, importes y estadística")
