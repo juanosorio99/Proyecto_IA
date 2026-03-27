@@ -339,8 +339,11 @@ st.markdown(
     <div class="hero-box">
         <h1 style="margin-bottom: 8px; font-size: 3rem;">🚀 Property Analyzer</h1>
         <p style="font-size: 1.08rem; color: #dbe7ff; max-width: 1000px;">
-            Analizador especializado para el archivo CSV de Property con alquiler variable. Esta vista está diseñada
-            para revisar clientes, ciclos de facturación, importes, estados, períodos y fechas clave del proceso.
+            Analizador especializado para Property.<br>
+            Hecho por:<br>
+            - Juan<br>
+            - Leon<br>
+            - Gina<br>
         </p>
     </div>
     """,
@@ -719,4 +722,4 @@ if uploaded_file is not None:
 else:
     st.info("Sube el CSV de Property para iniciar el análisis especializado.")
 
-st.caption("Diseño futurista en Streamlit • análisis especializado de Property • clientes, ciclos, importes y estadística")
+st.caption("Proyecto Curso IA EOH • análisis especializado de Property ")
